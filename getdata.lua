@@ -84,12 +84,9 @@ local function getPurchaseData(plot)
             if mainPart then
                 local billboardGui = mainPart:FindFirstChild("BillboardGui")
                 if billboardGui then
-                    local textLabels = {"Delay", "LockStudio", "Locked", "RemainingTime"}
-                    for _, labelName in ipairs(textLabels) do
-                        local label = billboardGui:FindFirstChild(labelName)
-                        if label and label:IsA("TextLabel") then
-                            purchaseData[labelName] = label.Text
-                        end
+                    local remainingTimeLabel = billboardGui:FindFirstChild("RemainingTime")
+                    if remainingTimeLabel and remainingTimeLabel:IsA("TextLabel") then
+                        purchaseData.RemainingTime = remainingTimeLabel.Text
                     end
                 end
             end
@@ -106,7 +103,7 @@ local function updateBestPetData(bestPetData, isBestPetMine)
     for _, child in ipairs(bestPetFolder:GetChildren()) do
         child:Destroy()
     end
-    if bestPetData then
+    if bestPetData and not isBestPetMine then
         local nameValue = Instance.new("StringValue")
         nameValue.Name = "name"
         nameValue.Value = bestPetData.name
@@ -151,12 +148,6 @@ local function updateBestPetData(bestPetData, isBestPetMine)
         plotGuidValue.Name = "plotguid"
         plotGuidValue.Value = bestPetData.plotguid
         plotGuidValue.Parent = bestPetFolder
-        if isBestPetMine then
-            local isBestPetMineValue = Instance.new("BoolValue")
-            isBestPetMineValue.Name = "is_best_pet_mine"
-            isBestPetMineValue.Value = true
-            isBestPetMineValue.Parent = bestPetFolder
-        end
     end
 end
 local function updateReplicatedStorageData(data, bestPet, isBestPetMine)
@@ -177,98 +168,119 @@ local function updateReplicatedStorageData(data, bestPet, isBestPetMine)
             plotFolder.Parent = playerDataFolder
         end
         processedPlots[plotFolder.Name] = true
-        local ownerValue = plotFolder:FindFirstChild("owner") or Instance.new("StringValue")
-        ownerValue.Name = "owner"
-        ownerValue.Value = plotData.owner
-        ownerValue.Parent = plotFolder
-        local isMineValue = plotFolder:FindFirstChild("is_mine") or Instance.new("BoolValue")
-        isMineValue.Name = "is_mine"
-        isMineValue.Value = plotData.is_mine
-        isMineValue.Parent = plotFolder
-        local plotIdValue = plotFolder:FindFirstChild("plot_id") or Instance.new("StringValue")
-        plotIdValue.Name = "plot_id"
-        plotIdValue.Value = plotData.plot_id
-        plotIdValue.Parent = plotFolder
-        local plotGuidValue = plotFolder:FindFirstChild("plotguid") or Instance.new("StringValue")
-        plotGuidValue.Name = "plotguid"
-        plotGuidValue.Value = plotData.plotguid
-        plotGuidValue.Parent = plotFolder
-        local summaryFolder = plotFolder:FindFirstChild("summary") or Instance.new("Folder")
-        if not summaryFolder.Parent then
-            summaryFolder.Name = "summary"
-            summaryFolder.Parent = plotFolder
-        end
-        local floorValue = summaryFolder:FindFirstChild("floor") or Instance.new("StringValue")
-        floorValue.Name = "floor"
-        floorValue.Value = tostring(plotData.summary.floor)
-        floorValue.Parent = summaryFolder
-        local totalSlotsValue = summaryFolder:FindFirstChild("total_slots") or Instance.new("StringValue")
-        totalSlotsValue.Name = "total_slots"
-        totalSlotsValue.Value = tostring(plotData.summary.total_slots)
-        totalSlotsValue.Parent = summaryFolder
-        local occupiedSlotsValue = summaryFolder:FindFirstChild("occupied_slots") or Instance.new("StringValue")
-        occupiedSlotsValue.Name = "occupied_slots"
-        occupiedSlotsValue.Value = tostring(plotData.summary.occupied_slots)
-        occupiedSlotsValue.Parent = summaryFolder
-        local emptySlotsValue = summaryFolder:FindFirstChild("empty_slots") or Instance.new("StringValue")
-        emptySlotsValue.Name = "empty_slots"
-        emptySlotsValue.Value = tostring(plotData.summary.empty_slots)
-        emptySlotsValue.Parent = summaryFolder
-        if plotData.pods then
+        if plotData.owner == "Empty" then
+            local is_empty = plotFolder:FindFirstChild("is_empty") or Instance.new("BoolValue")
+            is_empty.Name = "is_empty"
+            is_empty.Value = true
+            is_empty.Parent = plotFolder
+            local plotGuidValue = plotFolder:FindFirstChild("plotguid") or Instance.new("StringValue")
+            plotGuidValue.Name = "plotguid"
+            plotGuidValue.Value = plotData.plotguid
+            plotGuidValue.Parent = plotFolder
+            local childrenToDestroy = {}
+            for _, child in ipairs(plotFolder:GetChildren()) do
+                if child.Name ~= "is_empty" and child.Name ~= "plotguid" then
+                    table.insert(childrenToDestroy, child)
+                end
+            end
+            for _, child in ipairs(childrenToDestroy) do
+                child:Destroy()
+            end
+        else
+            local is_empty = plotFolder:FindFirstChild("is_empty") or Instance.new("BoolValue")
+            is_empty.Name = "is_empty"
+            is_empty.Value = false
+            is_empty.Parent = plotFolder
+            local ownerValue = plotFolder:FindFirstChild("owner") or Instance.new("StringValue")
+            ownerValue.Name = "owner"
+            ownerValue.Value = plotData.owner
+            ownerValue.Parent = plotFolder
+            local isMineValue = plotFolder:FindFirstChild("is_mine") or Instance.new("BoolValue")
+            isMineValue.Name = "is_mine"
+            isMineValue.Value = plotData.is_mine
+            isMineValue.Parent = plotFolder
+            local plotIdValue = plotFolder:FindFirstChild("plot_id") or Instance.new("StringValue")
+            plotIdValue.Name = "plot_id"
+            plotIdValue.Value = plotData.plot_id
+            plotIdValue.Parent = plotFolder
+            local plotGuidValue = plotFolder:FindFirstChild("plotguid") or Instance.new("StringValue")
+            plotGuidValue.Name = "plotguid"
+            plotGuidValue.Value = plotData.plotguid
+            plotGuidValue.Parent = plotFolder
+            local summaryFolder = plotFolder:FindFirstChild("summary") or Instance.new("Folder")
+            if not summaryFolder.Parent then
+                summaryFolder.Name = "summary"
+                summaryFolder.Parent = plotFolder
+            end
+            local floorValue = summaryFolder:FindFirstChild("floor") or Instance.new("StringValue")
+            floorValue.Name = "floor"
+            floorValue.Value = tostring(plotData.summary.floor)
+            floorValue.Parent = summaryFolder
+            local totalSlotsValue = summaryFolder:FindFirstChild("total_slots") or Instance.new("StringValue")
+            totalSlotsValue.Name = "total_slots"
+            totalSlotsValue.Value = tostring(plotData.summary.total_slots)
+            totalSlotsValue.Parent = summaryFolder
+            local occupiedSlotsValue = summaryFolder:FindFirstChild("occupied_slots") or Instance.new("StringValue")
+            occupiedSlotsValue.Name = "occupied_slots"
+            occupiedSlotsValue.Value = tostring(plotData.summary.occupied_slots)
+            occupiedSlotsValue.Parent = summaryFolder
+            local emptySlotsValue = summaryFolder:FindFirstChild("empty_slots") or Instance.new("StringValue")
+            emptySlotsValue.Name = "empty_slots"
+            emptySlotsValue.Value = tostring(plotData.summary.empty_slots)
+            emptySlotsValue.Parent = summaryFolder
             local podsFolder = plotFolder:FindFirstChild("pods") or Instance.new("Folder")
             if not podsFolder.Parent then
                 podsFolder.Name = "pods"
                 podsFolder.Parent = plotFolder
             end
             local processedPods = {}
-            for _, pod in ipairs(plotData.pods) do
-                local podiumFolder = podsFolder:FindFirstChild("podium_" .. pod.podium_id) or Instance.new("Folder")
-                if not podiumFolder.Parent then
-                    podiumFolder.Name = "podium_" .. pod.podium_id
-                    podiumFolder.Parent = podsFolder
-                end
-                processedPods[podiumFolder.Name] = true
-                local isEmptyValue = podiumFolder:FindFirstChild("is_empty") or Instance.new("BoolValue")
-                isEmptyValue.Name = "is_empty"
-                isEmptyValue.Value = pod.is_empty
-                isEmptyValue.Parent = podiumFolder
-                if pod.pet then
-                    local petFolder = podiumFolder:FindFirstChild("pet") or Instance.new("Folder")
-                    if not petFolder.Parent then
+            if plotData.pods then
+                for _, pod in ipairs(plotData.pods) do
+                    local podiumFolder = podsFolder:FindFirstChild("podium_" .. pod.podium_id) or Instance.new("Folder")
+                    if not podiumFolder.Parent then
+                        podiumFolder.Name = "podium_" .. pod.podium_id
+                        podiumFolder.Parent = podsFolder
+                    end
+                    processedPods[podiumFolder.Name] = true
+                    local isEmptyValue = podiumFolder:FindFirstChild("is_empty") or Instance.new("BoolValue")
+                    isEmptyValue.Name = "is_empty"
+                    isEmptyValue.Value = pod.is_empty
+                    isEmptyValue.Parent = podiumFolder
+                    local petFolder = podiumFolder:FindFirstChild("pet")
+                    if pod.pet then
+                        petFolder = petFolder or Instance.new("Folder")
                         petFolder.Name = "pet"
                         petFolder.Parent = podiumFolder
-                    end
-                    local nameValue = petFolder:FindFirstChild("name") or Instance.new("StringValue")
-                    nameValue.Name = "name"
-                    nameValue.Value = pod.pet.name
-                    nameValue.Parent = petFolder
-                    local generationValue = petFolder:FindFirstChild("generation_value") or Instance.new("StringValue")
-                    generationValue.Name = "generation_value"
-                    generationValue.Value = tostring(pod.pet.generation_value)
-                    generationValue.Parent = petFolder
-                    local isStolenValue = petFolder:FindFirstChild("is_stolen") or Instance.new("BoolValue")
-                    isStolenValue.Name = "is_stolen"
-                    isStolenValue.Value = pod.pet.is_stolen
-                    isStolenValue.Parent = petFolder
-                    local isInMachineValue = petFolder:FindFirstChild("is_in_machine") or Instance.new("BoolValue")
-                    isInMachineValue.Name = "is_in_machine"
-                    isInMachineValue.Value = pod.pet.is_in_machine
-                    isInMachineValue.Parent = petFolder
-                    local mutationValue = petFolder:FindFirstChild("mutation") or Instance.new("StringValue")
-                    mutationValue.Name = "mutation"
-                    mutationValue.Value = pod.pet.mutation
-                    mutationValue.Parent = petFolder
-                    local priceValue = petFolder:FindFirstChild("price") or Instance.new("StringValue")
-                    priceValue.Name = "price"
-                    priceValue.Value = pod.pet.price
-                    priceValue.Parent = petFolder
-                    local rarityValue = petFolder:FindFirstChild("rarity") or Instance.new("StringValue")
-                    rarityValue.Name = "rarity"
-                    rarityValue.Value = pod.pet.rarity
-                    rarityValue.Parent = petFolder
-                else
-                    if podiumFolder:FindFirstChild("pet") then
-                        podiumFolder:FindFirstChild("pet"):Destroy()
+                        local nameValue = petFolder:FindFirstChild("name") or Instance.new("StringValue")
+                        nameValue.Name = "name"
+                        nameValue.Value = pod.pet.name
+                        nameValue.Parent = petFolder
+                        local generationValue = petFolder:FindFirstChild("generation_value") or Instance.new("StringValue")
+                        generationValue.Name = "generation_value"
+                        generationValue.Value = tostring(pod.pet.generation_value)
+                        generationValue.Parent = petFolder
+                        local isStolenValue = petFolder:FindFirstChild("is_stolen") or Instance.new("BoolValue")
+                        isStolenValue.Name = "is_stolen"
+                        isStolenValue.Value = pod.pet.is_stolen
+                        isStolenValue.Parent = petFolder
+                        local isInMachineValue = petFolder:FindFirstChild("is_in_machine") or Instance.new("BoolValue")
+                        isInMachineValue.Name = "is_in_machine"
+                        isInMachineValue.Value = pod.pet.is_in_machine
+                        isInMachineValue.Parent = petFolder
+                        local mutationValue = petFolder:FindFirstChild("mutation") or Instance.new("StringValue")
+                        mutationValue.Name = "mutation"
+                        mutationValue.Value = pod.pet.mutation
+                        mutationValue.Parent = petFolder
+                        local priceValue = petFolder:FindFirstChild("price") or Instance.new("StringValue")
+                        priceValue.Name = "price"
+                        priceValue.Value = pod.pet.price
+                        priceValue.Parent = petFolder
+                        local rarityValue = petFolder:FindFirstChild("rarity") or Instance.new("StringValue")
+                        rarityValue.Name = "rarity"
+                        rarityValue.Value = pod.pet.rarity
+                        rarityValue.Parent = petFolder
+                    elseif petFolder then
+                        petFolder:Destroy()
                     end
                 end
             end
@@ -277,33 +289,41 @@ local function updateReplicatedStorageData(data, bestPet, isBestPetMine)
                     child:Destroy()
                 end
             end
-        else
-            if plotFolder:FindFirstChild("pods") then
-                plotFolder:FindFirstChild("pods"):Destroy()
-            end
-        end
-        if plotData.purchase_data and next(plotData.purchase_data) ~= nil then
-            local purchasesFolder = plotFolder:FindFirstChild("purchases") or Instance.new("Folder")
-            if not purchasesFolder.Parent then
-                purchasesFolder.Name = "purchases"
-                purchasesFolder.Parent = plotFolder
-            end
-            local processedPurchases = {}
-            for name, textValue in pairs(plotData.purchase_data) do
-                local dataValue = purchasesFolder:FindFirstChild(name) or Instance.new("StringValue")
-                dataValue.Name = name
-                dataValue.Value = textValue
-                dataValue.Parent = purchasesFolder
-                processedPurchases[name] = true
-            end
-            for _, child in ipairs(purchasesFolder:GetChildren()) do
-                if not processedPurchases[child.Name] then
+            local basetimeFolder = plotFolder:FindFirstChild("basetime")
+            if plotData.purchase_data and next(plotData.purchase_data) ~= nil then
+                basetimeFolder = basetimeFolder or Instance.new("Folder")
+                if not basetimeFolder.Parent then
+                    basetimeFolder.Name = "basetime"
+                    basetimeFolder.Parent = plotFolder
+                end
+                local isLockedValue = basetimeFolder:FindFirstChild("is_locked") or Instance.new("BoolValue")
+                isLockedValue.Name = "is_locked"
+                isLockedValue.Value = plotData.purchase_data.RemainingTime ~= "0s"
+                isLockedValue.Parent = basetimeFolder
+                local remainingTimeValue = basetimeFolder:FindFirstChild("RemainingTime") or Instance.new("StringValue")
+                remainingTimeValue.Name = "RemainingTime"
+                remainingTimeValue.Value = plotData.purchase_data.RemainingTime
+                remainingTimeValue.Parent = basetimeFolder
+                local childrenToDestroy = {}
+                for _, child in ipairs(basetimeFolder:GetChildren()) do
+                    if child.Name ~= "is_locked" and child.Name ~= "RemainingTime" then
+                        table.insert(childrenToDestroy, child)
+                    end
+                end
+                for _, child in ipairs(childrenToDestroy) do
                     child:Destroy()
                 end
+            elseif basetimeFolder then
+                basetimeFolder:Destroy()
             end
-        else
-            if plotFolder:FindFirstChild("purchases") then
-                plotFolder:FindFirstChild("purchases"):Destroy()
+            local otherChildrenToDestroy = {}
+            for _, child in ipairs(plotFolder:GetChildren()) do
+                if child.Name ~= "is_empty" and child.Name ~= "owner" and child.Name ~= "is_mine" and child.Name ~= "plot_id" and child.Name ~= "plotguid" and child.Name ~= "summary" and child.Name ~= "pods" and child.Name ~= "basetime" then
+                    table.insert(otherChildrenToDestroy, child)
+                end
+            end
+            for _, child in ipairs(otherChildrenToDestroy) do
+                child:Destroy()
             end
         end
     end
@@ -402,7 +422,7 @@ local function generatePetData()
                                 podData.pet = pet
                                 occupiedSlots = occupiedSlots + 1
                                 local parsedValue = (typeof(pet.generation_value) == "string" and pet.generation_value == "Infinity") and math.huge or tonumber(pet.generation_value)
-                                if parsedValue > bestGenerationValue then
+                                if (not isMine) and parsedValue > bestGenerationValue then
                                     bestGenerationValue = parsedValue
                                     bestPet = pet
                                 end
@@ -504,12 +524,9 @@ local function setupListenersForPlotBlock(plotBlock)
     if not mainPart then return end
     local billboardGui = mainPart:FindFirstChild("BillboardGui")
     if not billboardGui then return end
-    local textLabels = {"Delay", "LockStudio", "Locked", "RemainingTime"}
-    for _, name in ipairs(textLabels) do
-        local label = billboardGui:FindFirstChild(name)
-        if label and label:IsA("TextLabel") then
-            table.insert(connections, label:GetPropertyChangedSignal("Text"):Connect(generatePetData))
-        end
+    local remainingTimeLabel = billboardGui:FindFirstChild("RemainingTime")
+    if remainingTimeLabel and remainingTimeLabel:IsA("TextLabel") then
+        table.insert(connections, remainingTimeLabel:GetPropertyChangedSignal("Text"):Connect(generatePetData))
     end
 end
 local function setupListenersForPlot(plot)
