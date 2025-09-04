@@ -1,0 +1,756 @@
+local player = game:GetService("Players").LocalPlayer
+local autoGetBestPet = true
+local currentBestPetGui = nil
+local connections = {}
+local notifiedStolenPetInstance = nil
+local lastNotification = { message = "", timestamp = 0 }
+local notificationCooldown = 10
+local serverHadPetsLastCheck = true
+local managedGuis = {}
+local RunService = game:GetService("RunService")
+local currentHighlight = nil
+local updatePending = false
+local lastBestPetOwnerName = nil
+local lastAutoClaimAttempt = 0
+local PathfindingService = game:GetService("PathfindingService")
+local autoGetState = "IDLE"
+local bestPetInfo = nil
+local pathToFollow = nil
+local currentWaypointIndex = nil
+local originalWalkSpeed = 16
+local moveConnection = nil
+
+local function sendNotification(message)
+	local currentTime = tick()
+	if message == lastNotification.message and (currentTime - lastNotification.timestamp) < notificationCooldown then
+		return
+	end
+	if (currentTime - lastNotification.timestamp) < 3 then
+		return
+	end
+
+	lastNotification.message = message
+	lastNotification.timestamp = currentTime
+
+	if not player then
+		return
+	end
+
+	local playerGui = player:WaitForChild("PlayerGui")
+	local notificationGui = playerGui:WaitForChild("Notification", 5)
+	if not notificationGui then
+		return
+	end
+
+	local notificationFrame = notificationGui:FindFirstChild("Notification")
+	if not notificationFrame then
+		return
+	end
+
+	local template = notificationFrame:FindFirstChild("Template")
+	if not (template and template:IsA("TextLabel")) then
+		return
+	end
+
+	local newNotif = template:Clone()
+	newNotif.Name = "ActiveNotification"
+	newNotif.Text = message
+	newNotif.Visible = true
+	newNotif.TextTransparency = 0
+	newNotif.Parent = notificationFrame
+
+	task.delay(6, function()
+		if not newNotif or not newNotif.Parent then return end
+		for i = 1, 10 do
+			newNotif.TextTransparency = i / 10
+			task.wait(0.05)
+		end
+		newNotif:Destroy()
+	end)
+end
+
+local function parseGenerationValue(text)
+    if not text or type(text) ~= "string" then return 0 end
+	if string.find(text, "Infinity") then
+		return math.huge
+	end
+	local multipliers = {
+		k = 1e3, m = 1e6, b = 1e9, t = 1e12, qa = 1e15, qi = 1e18, sx = 1e21,
+		sp = 1e24, oc = 1e27, no = 1e30, de = 1e33, un = 1e36, du = 1e39,
+		tr = 1e42, qu = 1e45, qt = 1e48, se = 1e51, st = 1e54, og = 1e57,
+		nn = 1e60, vi = 1e63, ce = 1e66
+	}
+	
+	local cleanText = string.lower(text)
+	cleanText = string.gsub(cleanText, "[$%s,]", "")
+	cleanText = string.gsub(cleanText, "/s$", "")
+	
+	local numStr, suffix = string.match(cleanText, "^([%d%.]+)(%a*)$")
+	
+	if not numStr then
+		numStr = string.match(cleanText, "^[%d%.]+")
+		if not numStr then return 0 end
+		suffix = ""
+	end
+	
+	local value = tonumber(numStr)
+	if not value then return 0 end
+	
+	if suffix and suffix ~= "" then
+		local multiplier = multipliers[suffix]
+		if multiplier then
+			value = value * multiplier
+		end
+	end
+	
+	return value
+end
+
+local function isMyPlot(plot)
+	if not player then return false end
+	local plotSign = plot:FindFirstChild("PlotSign")
+	if plotSign then
+		local surfaceGui = plotSign:FindFirstChildOfClass("SurfaceGui")
+		if surfaceGui then
+			local frame = surfaceGui:FindFirstChildOfClass("Frame")
+			if frame then
+				local textLabel = frame:FindFirstChild("TextLabel")
+				if textLabel then
+					local ownerName = string.match(textLabel.Text, "^(%S+)'s Base$")
+					if ownerName and (ownerName == player.Name or ownerName == player.DisplayName) then
+						return true
+					end
+				end
+			end
+		end
+	end
+	return false
+end
+
+local function getPlotOwnerName(plot)
+	if not plot then return nil end
+	local plotSign = plot:FindFirstChild("PlotSign")
+	if plotSign then
+		local surfaceGui = plotSign:FindFirstChildOfClass("SurfaceGui")
+		if surfaceGui then
+			local frame = surfaceGui:FindFirstChildOfClass("Frame")
+			if frame then
+				local textLabel = frame:FindFirstChild("TextLabel")
+				if textLabel then
+					local ownerName = string.match(textLabel.Text, "^(%S+)'s Base$")
+					return ownerName
+				end
+			end
+		end
+	end
+	return nil
+end
+
+local function resetOldBestPet()
+	if currentBestPetGui and currentBestPetGui.Parent then
+		currentBestPetGui.AlwaysOnTop = false
+		currentBestPetGui.MaxDistance = 100
+		currentBestPetGui.Size = UDim2.fromOffset(150, 50)
+	end
+	currentBestPetGui = nil
+	if currentHighlight then
+		currentHighlight:Destroy()
+		currentHighlight = nil
+	end
+end
+
+local function applyHighlight(targetPart, bestPetGui)
+	if not targetPart then return end
+	local highlight = Instance.new("Highlight")
+	highlight.Name = "BestPetHighlight"
+	highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+	highlight.FillColor = Color3.fromRGB(50, 200, 255)
+	highlight.FillTransparency = 0.2
+	highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+	highlight.Parent = targetPart
+	currentHighlight = highlight
+
+	if bestPetGui then
+		bestPetGui.AlwaysOnTop = true
+		bestPetGui.MaxDistance = math.huge
+		bestPetGui.Size = UDim2.fromOffset(250, 100)
+		currentBestPetGui = bestPetGui
+	end
+end
+
+local function findPetHolder(petGui, petGenerationValue)
+    local displayNameLabel = petGui:FindFirstChild("DisplayName")
+    if not displayNameLabel then return nil end
+    local petName = displayNameLabel.Text
+
+    local petModel = nil
+    for _, child in ipairs(workspace:GetChildren()) do
+        if child:IsA("Model") and child.Name == petName then
+            local rootPart = child:FindFirstChild("RootPart")
+            if rootPart then
+                local attachment = rootPart:FindFirstChild("Attachment")
+                if attachment then
+                    local animalOverhead = attachment:FindFirstChild("AnimalOverhead")
+                    if animalOverhead then
+                        local generationLabel = animalOverhead:FindFirstChild("Generation")
+                        if generationLabel then
+                            local success, textValue = pcall(function() return generationLabel.Text end)
+                            if success and typeof(textValue) == "string" then
+                                local generationValueInWorld = parseGenerationValue(textValue)
+                                if generationValueInWorld == petGenerationValue then
+                                    petModel = child
+                                    break
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    if not petModel then return nil end
+
+    local closestPlayer = nil
+    local minDistance = math.huge
+    local petPosition
+	if petModel.PrimaryPart then
+		petPosition = petModel.PrimaryPart.Position
+	else
+		local firstPart = petModel:FindFirstChildOfClass("BasePart")
+		if firstPart then petPosition = firstPart.Position end
+	end
+
+    if not petPosition then return nil end
+
+    for _, p in ipairs(game:GetService("Players"):GetPlayers()) do
+        if p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
+            local distance = (p.Character.HumanoidRootPart.Position - petPosition).Magnitude
+            if distance < minDistance then
+                minDistance = distance
+                closestPlayer = p
+            end
+        end
+    end
+
+    return closestPlayer
+end
+
+local function stopWalking()
+	if moveConnection then
+		moveConnection:Disconnect()
+		moveConnection = nil
+	end
+	local character = player.Character
+	if character then
+		local humanoid = character:FindFirstChildOfClass("Humanoid")
+		if humanoid then
+			humanoid:MoveTo(humanoid.Parent.HumanoidRootPart.Position)
+			humanoid.WalkSpeed = originalWalkSpeed
+		end
+	end
+	autoGetState = "IDLE"
+	pathToFollow = nil
+	currentWaypointIndex = nil
+end
+
+local function walkTo(destination)
+    local character = player.Character
+    if not character then stopWalking(); return end
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    local hrp = character:FindFirstChild("HumanoidRootPart")
+    if not humanoid or not hrp then stopWalking(); return end
+
+	if (hrp.Position - destination).Magnitude < 2 then 
+		if autoGetState == "WALKING_TO_PET" then autoGetState = "CLAIMING"
+		elseif autoGetState == "WALKING_HOME" then stopWalking()
+		end
+		return
+	end
+
+    humanoid.WalkSpeed = 40
+    local path = PathfindingService:CreatePath()
+    local success, err = pcall(function()
+        path:ComputeAsync(hrp.Position, destination)
+    end)
+
+    if success and path.Status == Enum.PathStatus.Success then
+        pathToFollow = path:GetWaypoints()
+		if #pathToFollow < 2 then
+			humanoid:MoveTo(destination)
+			return
+		end
+        currentWaypointIndex = 2
+		
+		if moveConnection then moveConnection:Disconnect() end
+        moveConnection = humanoid.MoveToFinished:Connect(function(reached)
+            if reached and currentWaypointIndex and pathToFollow and currentWaypointIndex < #pathToFollow then
+                currentWaypointIndex = currentWaypointIndex + 1
+                humanoid:MoveTo(pathToFollow[currentWaypointIndex].Position)
+            elseif reached then
+				if autoGetState == "WALKING_TO_PET" then autoGetState = "CLAIMING"
+				elseif autoGetState == "WALKING_HOME" then stopWalking()
+				end
+            else
+				stopWalking()
+            end
+        end)
+		humanoid:MoveTo(pathToFollow[currentWaypointIndex].Position)
+    else
+		humanoid:MoveTo(destination)
+    end
+end
+
+local function findMyReturnPoint()
+    local plotsFolder = workspace:FindFirstChild("Plots")
+    if not plotsFolder then return nil end
+    for _, plot in ipairs(plotsFolder:GetChildren()) do
+        if isMyPlot(plot) then
+            local decorations = plot:FindFirstChild("Decorations")
+            if decorations then
+                for _, part in ipairs(decorations:GetChildren()) do
+                    if part.Name == "structure base home" and part:FindFirstChildOfClass("SurfaceGui") then
+                        return part.Position
+                    end
+                end
+            end
+            break
+        end
+    end
+    return nil
+end
+
+local function doUpdate()
+	local myHighestGeneration = -1
+	local otherHighestGeneration = -1
+	local otherTargetPart, otherBestPetGui, otherBestPetOwnerName = nil, nil, nil
+	local plotsFolder = workspace:FindFirstChild("Plots")
+	if not plotsFolder then
+		return
+	end
+
+	local plots = plotsFolder:GetChildren()
+
+	for _, plot in ipairs(plots) do
+		local ownPlot = isMyPlot(plot)
+		local animalPodiums = plot:FindFirstChild("AnimalPodiums")
+		if animalPodiums then
+			for _, numberedPodium in ipairs(animalPodiums:GetChildren()) do
+				local baseModel = numberedPodium:FindFirstChild("Base")
+				if baseModel then
+					local spawnPart = baseModel:FindFirstChild("Spawn")
+					if spawnPart then
+						local attachment = spawnPart:FindFirstChild("Attachment")
+						if attachment then
+							local animalOverhead = attachment:FindFirstChild("AnimalOverhead")
+							if animalOverhead then
+								local generationLabel = animalOverhead:FindFirstChild("Generation")
+								if generationLabel and generationLabel:IsA("TextLabel") and animalOverhead:FindFirstChild("DisplayName") then
+									local success, textValue = pcall(function() return generationLabel.Text end)
+									if success and typeof(textValue) == "string" then
+										local generationValue = parseGenerationValue(textValue)
+										if ownPlot then
+											if generationValue > myHighestGeneration then
+												myHighestGeneration = generationValue
+											end
+										else
+											if generationValue > otherHighestGeneration then
+												otherHighestGeneration = generationValue
+												otherBestPetOwnerName = getPlotOwnerName(plot)
+												local decorationsModel = baseModel:FindFirstChild("Decorations")
+												if decorationsModel then
+													local decorationPart = decorationsModel:FindFirstChild("Decoration")
+													if decorationPart and decorationPart:IsA("BasePart") then
+														otherTargetPart = decorationPart
+														otherBestPetGui = animalOverhead
+													end
+												end
+											end
+										end
+									end
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+
+	if lastBestPetOwnerName and lastBestPetOwnerName ~= otherBestPetOwnerName and otherBestPetOwnerName ~= player.Name and otherBestPetOwnerName ~= player.DisplayName then
+		local previousOwnerPlayer = game:GetService("Players"):FindFirstChild(lastBestPetOwnerName)
+		if not previousOwnerPlayer then
+			sendNotification(lastBestPetOwnerName .. " (best pet player) has left!")
+		end
+	end
+
+	if otherHighestGeneration > myHighestGeneration then
+		lastBestPetOwnerName = otherBestPetOwnerName
+	else
+		lastBestPetOwnerName = nil
+	end
+
+	resetOldBestPet()
+
+	bestPetInfo = nil
+	if otherTargetPart and otherHighestGeneration > myHighestGeneration then
+		local prompt, unlockGui, position
+		local baseModel = otherTargetPart.Parent.Parent
+		if baseModel then
+			local spawnPart = baseModel:FindFirstChild("Spawn")
+			if spawnPart and spawnPart:FindFirstChild("PromptAttachment") then
+				position = spawnPart.PromptAttachment.WorldPosition
+				for _, p in ipairs(spawnPart.PromptAttachment:GetChildren()) do
+					if p:IsA("ProximityPrompt") and p.KeyboardKeyCode == Enum.KeyCode.E then
+						prompt = p
+						break
+					end
+				end
+			end
+		end
+		
+		local plot = otherTargetPart:FindFirstAncestorMatching(function(a) return a:FindFirstChild("Purchases") end)
+		if plot then
+			local purchases = plot:FindFirstChild("Purchases")
+			local closestPlotBlock, minDistance = nil, math.huge
+			for _, child in ipairs(purchases:GetChildren()) do
+				if child:IsA("Model") and child.Name == "PlotBlock" and child:FindFirstChild("Main") then
+					local dist = math.abs(child.Main.Position.Y - (-7.91))
+					if dist < minDistance then minDistance, closestPlotBlock = dist, child end
+				end
+			end
+			if closestPlotBlock and closestPlotBlock:FindFirstChild("Main") and closestPlotBlock.Main:FindFirstChild("BillboardGui") then
+				unlockGui = closestPlotBlock.Main.BillboardGui:FindFirstChild("RemainingTime")
+			end
+		end
+
+		if prompt and unlockGui and position then
+			bestPetInfo = { prompt = prompt, unlockGui = unlockGui, position = position }
+			if autoGetState == "IDLE" then autoGetState = "WAITING_FOR_UNLOCK" end
+		end
+	end
+
+	if not bestPetInfo and autoGetState ~= "IDLE" then stopWalking() end
+	
+	local previousStolenInfo = notifiedStolenPetInstance
+	local currentBestIsStolen = false
+	
+	if otherBestPetGui then
+		local stolenLabel = otherBestPetGui:FindFirstChild("Stolen")
+		if stolenLabel and stolenLabel.Visible then
+			local success, stolenText = pcall(function() return stolenLabel.Text end)
+			if success and string.match(tostring(stolenText), "STOLEN") then
+				currentBestIsStolen = true
+			end
+		end
+	end
+
+	if previousStolenInfo then
+		local isDifferentPet = otherBestPetGui ~= previousStolenInfo.gui
+		local isNoLongerStolen = (otherBestPetGui == previousStolenInfo.gui and not currentBestIsStolen)
+		local noBestPetAnymore = not otherBestPetGui
+
+		if isDifferentPet or isNoLongerStolen or noBestPetAnymore then
+			local ownerIsPresent = game:GetService("Players"):FindFirstChild(previousStolenInfo.ownerName)
+			if ownerIsPresent and previousStolenInfo.gui and previousStolenInfo.gui.Parent then
+				sendNotification("The stolen pet was returned! Go get it!")
+			end
+			notifiedStolenPetInstance = nil
+		end
+	end
+
+	if currentBestIsStolen then
+		local isNewStolenPet = not previousStolenInfo or otherBestPetGui ~= previousStolenInfo.gui
+		if isNewStolenPet then
+			local stealer = findPetHolder(otherBestPetGui, otherHighestGeneration)
+			if stealer and stealer ~= player then
+				sendNotification("Someone is stealing the best pet!")
+			end
+		end
+		notifiedStolenPetInstance = { gui = otherBestPetGui, ownerName = otherBestPetOwnerName }
+	end
+
+	local anyPetFound = math.max(myHighestGeneration, otherHighestGeneration) > -1
+
+	if not anyPetFound then
+		if serverHadPetsLastCheck then
+			sendNotification("No valid pets found to highlight.")
+		end
+		serverHadPetsLastCheck = false
+		return
+	end
+	
+	serverHadPetsLastCheck = true
+
+	if otherTargetPart then
+		applyHighlight(otherTargetPart, otherBestPetGui)
+	end
+end
+
+local function requestUpdate()
+    if updatePending then return end
+    updatePending = true
+    task.defer(function()
+        pcall(doUpdate)
+        updatePending = false
+    end)
+end
+
+local function setupListenersForGui(animalOverhead)
+	if not animalOverhead then return end
+
+	local function connectSignal(obj, prop)
+		table.insert(connections, obj:GetPropertyChangedSignal(prop):Connect(requestUpdate))
+	end
+
+	local generationLabel = animalOverhead:FindFirstChild("Generation")
+	if generationLabel then
+		connectSignal(generationLabel, "Text")
+	end
+
+	local stolenLabel = animalOverhead:FindFirstChild("Stolen")
+	if stolenLabel then
+		connectSignal(stolenLabel, "Text")
+		connectSignal(stolenLabel, "Visible")
+	end
+
+	animalOverhead.ChildAdded:Connect(function(child)
+		if child.Name == "Generation" then
+			connectSignal(child, "Text")
+			requestUpdate()
+		elseif child.Name == "Stolen" then
+			connectSignal(child, "Text")
+			connectSignal(child, "Visible")
+			requestUpdate()
+		end
+	end)
+end
+
+local function setupListenersForPodium(numberedPodium)
+	local baseModel = numberedPodium:FindFirstChild("Base")
+	if not baseModel then return end
+	local spawnPart = baseModel:FindFirstChild("Spawn")
+	if not spawnPart then return end
+
+	local function setupForAttachment(attachment)
+		if not attachment then return end
+		attachment.ChildAdded:Connect(function(child)
+			if child.Name == "AnimalOverhead" then
+				setupListenersForGui(child)
+				requestUpdate()
+			end
+		end)
+		local animalOverhead = attachment:FindFirstChild("AnimalOverhead")
+		if animalOverhead then
+			setupListenersForGui(animalOverhead)
+		end
+	end
+
+	spawnPart.ChildRemoved:Connect(function(child)
+		if child.Name == "Attachment" then
+			requestUpdate()
+		end
+	end)
+	spawnPart.ChildAdded:Connect(function(child)
+		if child.Name == "Attachment" then
+			setupForAttachment(child)
+			requestUpdate()
+		end
+	end)
+
+	local attachment = spawnPart:FindFirstChild("Attachment")
+	if attachment then
+		setupForAttachment(attachment)
+	end
+end
+
+local function managePlotBlockGui(plot)
+	local plotSign = plot:FindFirstChild("PlotSign")
+	local isClaimed = false
+	if plotSign then
+		local surfaceGui = plotSign:FindFirstChildOfClass("SurfaceGui")
+		if surfaceGui then
+			local frame = surfaceGui:FindFirstChildOfClass("Frame")
+			if frame then
+				local textLabel = frame:FindFirstChild("TextLabel")
+				if textLabel and textLabel.Text ~= "Empty Base" then
+					isClaimed = true
+				end
+			end
+		end
+	end
+
+	local entry = managedGuis[plot]
+	if not isClaimed and entry then
+		entry.gui.AlwaysOnTop = false
+		entry.gui.MaxDistance = entry.originalMaxDistance
+		entry.gui.Size = entry.originalSize
+		managedGuis[plot] = nil
+		return
+	end
+
+	if isClaimed and not entry then
+		local purchases = plot:FindFirstChild("Purchases")
+		if not purchases then return end
+
+		local closestPlotBlock = nil
+		local minDistance = math.huge
+		local targetY = -7.9102678298950195
+
+		for _, child in ipairs(purchases:GetChildren()) do
+			if child:IsA("Model") and child.Name == "PlotBlock" then
+				local mainPart = child:FindFirstChild("Main")
+				if mainPart and mainPart:IsA("BasePart") then
+					local distance = math.abs(mainPart.Position.Y - targetY)
+					if distance < minDistance then
+						minDistance = distance
+						closestPlotBlock = child
+					end
+				end
+			end
+		end
+		
+		if closestPlotBlock then
+			local targetMainPart = closestPlotBlock:FindFirstChild("Main")
+			if targetMainPart then
+				local billboardGui = targetMainPart:FindFirstChild("BillboardGui")
+				if billboardGui then
+					local originalSizeForRevert = billboardGui.Size
+					local originalMaxDistanceForRevert = billboardGui.MaxDistance
+
+					billboardGui.AlwaysOnTop = true
+					billboardGui.MaxDistance = 9999
+					
+					managedGuis[plot] = {
+						gui = billboardGui,
+						mainPart = targetMainPart,
+						originalSize = originalSizeForRevert,
+						originalMaxDistance = originalMaxDistanceForRevert,
+						baseSizeForScaling = UDim2.fromOffset(7, 10)
+					}
+				end
+			end
+		end
+	end
+end
+
+local function setupListenersForPlot(plot)
+	local animalPodiums = plot:FindFirstChild("AnimalPodiums")
+	if animalPodiums then
+		for _, numberedPodium in ipairs(animalPodiums:GetChildren()) do
+			setupListenersForPodium(numberedPodium)
+		end
+		animalPodiums.ChildAdded:Connect(setupListenersForPodium)
+		animalPodiums.ChildRemoved:Connect(requestUpdate)
+	end
+	
+	local plotSign = plot:FindFirstChild("PlotSign")
+	if plotSign then
+		local surfaceGui = plotSign:FindFirstChildOfClass("SurfaceGui")
+		if surfaceGui then
+			local frame = surfaceGui:FindFirstChildOfClass("Frame")
+			if frame then
+				local textLabel = frame:FindFirstChild("TextLabel")
+				if textLabel then
+					textLabel:GetPropertyChangedSignal("Text"):Connect(function()
+						managePlotBlockGui(plot)
+					end)
+				end
+			end
+		end
+	end
+	managePlotBlockGui(plot)
+end
+
+local function start()
+    for _, conn in ipairs(connections) do
+        conn:Disconnect()
+    end
+    connections = {}
+	if player.Character then
+		originalWalkSpeed = player.Character:FindFirstChildOfClass("Humanoid").WalkSpeed
+	end
+	player.CharacterAdded:Connect(function(char)
+		originalWalkSpeed = char:WaitForChild("Humanoid").WalkSpeed
+		char:WaitForChild("Humanoid").Died:Connect(stopWalking)
+	end)
+
+
+    local plotsFolder = workspace:FindFirstChild("Plots")
+    if plotsFolder then
+        for _, plot in ipairs(plotsFolder:GetChildren()) do
+            setupListenersForPlot(plot)
+        end
+        plotsFolder.ChildAdded:Connect(setupListenersForPlot)
+        plotsFolder.ChildRemoved:Connect(function(plot)
+			if managedGuis[plot] then
+				local entry = managedGuis[plot]
+				entry.gui.AlwaysOnTop = false
+				entry.gui.MaxDistance = entry.originalMaxDistance
+				entry.gui.Size = entry.originalSize
+				managedGuis[plot] = nil
+			end
+			requestUpdate()
+		end)
+        game:GetService("Players").PlayerRemoving:Connect(function()
+            task.wait(1)
+            requestUpdate()
+        end)
+        requestUpdate()
+    end
+
+	local lastGuiUpdate = 0
+	local guiUpdateInterval = 1/30
+
+	RunService.Heartbeat:Connect(function()
+		local now = tick()
+		if not player or not player.Character or not player.Character:FindFirstChild("HumanoidRootPart") then
+			if autoGetState ~= "IDLE" then stopWalking() end
+			return
+		end
+
+		if autoGetBestPet and bestPetInfo then
+			if autoGetState == "WAITING_FOR_UNLOCK" then
+				if not bestPetInfo.unlockGui.Visible then
+					autoGetState = "WALKING_TO_PET"
+					walkTo(bestPetInfo.position)
+				end
+			elseif autoGetState == "CLAIMING" then
+				if (now - lastAutoClaimAttempt) > 1.6 then
+					game:GetService("ProximityPromptService"):InputTriggered(player, bestPetInfo.prompt)
+					lastAutoClaimAttempt = now
+					local returnPoint = findMyReturnPoint()
+					if returnPoint then
+						autoGetState = "WALKING_HOME"
+						walkTo(returnPoint)
+					else
+						stopWalking()
+					end
+				end
+			end
+		end
+
+		if now - lastGuiUpdate < guiUpdateInterval then return end
+		lastGuiUpdate = now
+		
+		local playerPos = player.Character.HumanoidRootPart.Position
+
+		for _, entry in pairs(managedGuis) do
+			local gui = entry.gui
+			local mainPart = entry.mainPart
+			local baseSize = entry.baseSizeForScaling
+			
+			local distance = (playerPos - mainPart.Position).Magnitude
+			
+			local closeDistance = 35
+			local farDistance = 550
+			local maxScale = 50.0
+
+			local scaleFactor = 1 + (maxScale - 1) * math.clamp((distance - closeDistance) / (farDistance - closeDistance), 0, 1)
+
+			gui.Size = UDim2.new(baseSize.X.Scale, baseSize.X.Offset * scaleFactor, baseSize.Y.Scale, baseSize.Y.Offset * scaleFactor)
+		end
+	end)
+end
+
+start()
