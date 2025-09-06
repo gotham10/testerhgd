@@ -5,11 +5,15 @@ local Bases = ReplicatedStorage:FindFirstChild("Bases")
 local RunService = game:GetService("RunService")
 local connections = {}
 local updatePending = false
+local lastPollTime = 0
+local plotLockdownState = {}
+
 local dataStore = ReplicatedStorage:FindFirstChild("PetData") or Instance.new("Folder")
 if not dataStore.Parent then
     dataStore.Name = "PetData"
     dataStore.Parent = ReplicatedStorage
 end
+
 local function getFloorFromSlotCount(slotCount)
     if slotCount >= 1 and slotCount <= 10 then
         return 1
@@ -21,6 +25,7 @@ local function getFloorFromSlotCount(slotCount)
         return "Unknown"
     end
 end
+
 local function parseGenerationValue(text)
     if not text or typeof(text) ~= "string" then return 0 end
     if string.find(text, "Infinity") then
@@ -51,6 +56,7 @@ local function parseGenerationValue(text)
     end
     return value
 end
+
 local function getPlotOwnerName(plot)
     if not plot then return nil end
     local plotSign = plot:FindFirstChild("PlotSign")
@@ -74,6 +80,7 @@ local function getPlotOwnerName(plot)
     end
     return nil
 end
+
 local function getPurchaseData(plot)
     local purchaseData = {}
     local purchasesFolder = plot:FindFirstChild("Purchases")
@@ -94,191 +101,129 @@ local function getPurchaseData(plot)
     end
     return purchaseData
 end
-local function updateBestPetData(bestPetData, isBestPetMine)
+
+local function updateValue(parent, name, value, type)
+	local valueInstance = parent:FindFirstChild(name)
+	if not valueInstance or not valueInstance:IsA(type) then
+		if valueInstance then valueInstance:Destroy() end
+		valueInstance = Instance.new(type)
+		valueInstance.Name = name
+		valueInstance.Parent = parent
+	end
+	if valueInstance.Value ~= value then
+		valueInstance.Value = value
+	end
+	return valueInstance
+end
+
+local function updateBestPetData(bestPetData)
     local bestPetFolder = dataStore:FindFirstChild("BestPet") or Instance.new("Folder")
     if not bestPetFolder.Parent then
         bestPetFolder.Name = "BestPet"
         bestPetFolder.Parent = dataStore
     end
-    for _, child in ipairs(bestPetFolder:GetChildren()) do
-        child:Destroy()
+
+    local isBestPetMine = bestPetData and (bestPetData.owner == player.Name or bestPetData.owner == player.DisplayName)
+    
+    if not bestPetData or isBestPetMine then
+        if #bestPetFolder:GetChildren() > 0 then
+            bestPetFolder:ClearAllChildren()
+        end
+        return
     end
-    if bestPetData and not isBestPetMine then
-        local nameValue = Instance.new("StringValue")
-        nameValue.Name = "name"
-        nameValue.Value = bestPetData.name
-        nameValue.Parent = bestPetFolder
-        local generationValue = Instance.new("StringValue")
-        generationValue.Name = "generation_value"
-        generationValue.Value = tostring(bestPetData.generation_value)
-        generationValue.Parent = bestPetFolder
-        local mutationValue = Instance.new("StringValue")
-        mutationValue.Name = "mutation"
-        mutationValue.Value = bestPetData.mutation
-        mutationValue.Parent = bestPetFolder
-        local priceValue = Instance.new("StringValue")
-        priceValue.Name = "price"
-        priceValue.Value = bestPetData.price
-        priceValue.Parent = bestPetFolder
-        local rarityValue = Instance.new("StringValue")
-        rarityValue.Name = "rarity"
-        rarityValue.Value = bestPetData.rarity
-        rarityValue.Parent = bestPetFolder
-        local isStolenValue = Instance.new("BoolValue")
-        isStolenValue.Name = "is_stolen"
-        isStolenValue.Value = bestPetData.is_stolen
-        isStolenValue.Parent = bestPetFolder
-        local isInMachineValue = Instance.new("BoolValue")
-        isInMachineValue.Name = "is_in_machine"
-        isInMachineValue.Value = bestPetData.is_in_machine
-        isInMachineValue.Parent = bestPetFolder
-        local floorValue = Instance.new("StringValue")
-        floorValue.Name = "floor"
-        floorValue.Value = tostring(bestPetData.floor)
-        floorValue.Parent = bestPetFolder
-        local podiumIdValue = Instance.new("StringValue")
-        podiumIdValue.Name = "podium_id"
-        podiumIdValue.Value = tostring(bestPetData.podium_id)
-        podiumIdValue.Parent = bestPetFolder
-        local ownerValue = Instance.new("StringValue")
-        ownerValue.Name = "owner"
-        ownerValue.Value = bestPetData.owner
-        ownerValue.Parent = bestPetFolder
-        local plotGuidValue = Instance.new("StringValue")
-        plotGuidValue.Name = "plotguid"
-        plotGuidValue.Value = bestPetData.plotguid
-        plotGuidValue.Parent = bestPetFolder
-    end
+
+    updateValue(bestPetFolder, "name", bestPetData.name, "StringValue")
+    updateValue(bestPetFolder, "generation_value", tostring(bestPetData.generation_value), "StringValue")
+    updateValue(bestPetFolder, "mutation", bestPetData.mutation, "StringValue")
+    updateValue(bestPetFolder, "price", bestPetData.price, "StringValue")
+    updateValue(bestPetFolder, "rarity", bestPetData.rarity, "StringValue")
+    updateValue(bestPetFolder, "is_stolen", bestPetData.is_stolen, "BoolValue")
+    updateValue(bestPetFolder, "is_in_machine", bestPetData.is_in_machine, "BoolValue")
+    updateValue(bestPetFolder, "floor", tostring(bestPetData.floor), "StringValue")
+    updateValue(bestPetFolder, "podium_id", tostring(bestPetData.podium_id), "StringValue")
+    updateValue(bestPetFolder, "owner", bestPetData.owner, "StringValue")
+    updateValue(bestPetFolder, "plotguid", bestPetData.plotguid, "StringValue")
 end
-local function updateReplicatedStorageData(data, bestPet, isBestPetMine)
+
+local function updateReplicatedStorageData(data, bestPet)
     local playerDataFolder = dataStore:FindFirstChild("PlayerData") or Instance.new("Folder")
     if not playerDataFolder.Parent then
         playerDataFolder.Name = "PlayerData"
         playerDataFolder.Parent = dataStore
     end
+
     local processedPlots = {}
     for _, plotData in ipairs(data.plots) do
         local folderName = plotData.owner
         if folderName == "Empty" then
             folderName = "Empty_" .. plotData.plotguid
         end
+        
         local plotFolder = playerDataFolder:FindFirstChild(folderName) or Instance.new("Folder")
         if not plotFolder.Parent then
             plotFolder.Name = folderName
             plotFolder.Parent = playerDataFolder
         end
         processedPlots[plotFolder.Name] = true
+
         if plotData.owner == "Empty" then
-            local is_empty = plotFolder:FindFirstChild("is_empty") or Instance.new("BoolValue")
-            is_empty.Name = "is_empty"
-            is_empty.Value = true
-            is_empty.Parent = plotFolder
-            local plotGuidValue = plotFolder:FindFirstChild("plotguid") or Instance.new("StringValue")
-            plotGuidValue.Name = "plotguid"
-            plotGuidValue.Value = plotData.plotguid
-            plotGuidValue.Parent = plotFolder
-            local childrenToDestroy = {}
+            updateValue(plotFolder, "is_empty", true, "BoolValue")
+            updateValue(plotFolder, "plotguid", plotData.plotguid, "StringValue")
             for _, child in ipairs(plotFolder:GetChildren()) do
                 if child.Name ~= "is_empty" and child.Name ~= "plotguid" then
-                    table.insert(childrenToDestroy, child)
+                    child:Destroy()
                 end
             end
-            for _, child in ipairs(childrenToDestroy) do
-                child:Destroy()
-            end
         else
-            local is_empty = plotFolder:FindFirstChild("is_empty") or Instance.new("BoolValue")
-            is_empty.Name = "is_empty"
-            is_empty.Value = false
-            is_empty.Parent = plotFolder
-            local ownerValue = plotFolder:FindFirstChild("owner") or Instance.new("StringValue")
-            ownerValue.Name = "owner"
-            ownerValue.Value = plotData.owner
-            ownerValue.Parent = plotFolder
-            local isMineValue = plotFolder:FindFirstChild("is_mine") or Instance.new("BoolValue")
-            isMineValue.Name = "is_mine"
-            isMineValue.Value = plotData.is_mine
-            isMineValue.Parent = plotFolder
-            local plotIdValue = plotFolder:FindFirstChild("plot_id") or Instance.new("StringValue")
-            plotIdValue.Name = "plot_id"
-            plotIdValue.Value = plotData.plot_id
-            plotIdValue.Parent = plotFolder
-            local plotGuidValue = plotFolder:FindFirstChild("plotguid") or Instance.new("StringValue")
-            plotGuidValue.Name = "plotguid"
-            plotGuidValue.Value = plotData.plotguid
-            plotGuidValue.Parent = plotFolder
+            updateValue(plotFolder, "is_empty", false, "BoolValue")
+            updateValue(plotFolder, "owner", plotData.owner, "StringValue")
+            updateValue(plotFolder, "is_mine", plotData.is_mine, "BoolValue")
+            updateValue(plotFolder, "plot_id", plotData.plot_id, "StringValue")
+            updateValue(plotFolder, "plotguid", plotData.plotguid, "StringValue")
+
             local summaryFolder = plotFolder:FindFirstChild("summary") or Instance.new("Folder")
             if not summaryFolder.Parent then
                 summaryFolder.Name = "summary"
                 summaryFolder.Parent = plotFolder
             end
-            local floorValue = summaryFolder:FindFirstChild("floor") or Instance.new("StringValue")
-            floorValue.Name = "floor"
-            floorValue.Value = tostring(plotData.summary.floor)
-            floorValue.Parent = summaryFolder
-            local totalSlotsValue = summaryFolder:FindFirstChild("total_slots") or Instance.new("StringValue")
-            totalSlotsValue.Name = "total_slots"
-            totalSlotsValue.Value = tostring(plotData.summary.total_slots)
-            totalSlotsValue.Parent = summaryFolder
-            local occupiedSlotsValue = summaryFolder:FindFirstChild("occupied_slots") or Instance.new("StringValue")
-            occupiedSlotsValue.Name = "occupied_slots"
-            occupiedSlotsValue.Value = tostring(plotData.summary.occupied_slots)
-            occupiedSlotsValue.Parent = summaryFolder
-            local emptySlotsValue = summaryFolder:FindFirstChild("empty_slots") or Instance.new("StringValue")
-            emptySlotsValue.Name = "empty_slots"
-            emptySlotsValue.Value = tostring(plotData.summary.empty_slots)
-            emptySlotsValue.Parent = summaryFolder
+            updateValue(summaryFolder, "floor", tostring(plotData.summary.floor), "StringValue")
+            updateValue(summaryFolder, "total_slots", tostring(plotData.summary.total_slots), "StringValue")
+            updateValue(summaryFolder, "occupied_slots", tostring(plotData.summary.occupied_slots), "StringValue")
+            updateValue(summaryFolder, "empty_slots", tostring(plotData.summary.empty_slots), "StringValue")
+
             local podsFolder = plotFolder:FindFirstChild("pods") or Instance.new("Folder")
             if not podsFolder.Parent then
                 podsFolder.Name = "pods"
                 podsFolder.Parent = plotFolder
             end
+            
             local processedPods = {}
             if plotData.pods then
                 for _, pod in ipairs(plotData.pods) do
-                    local podiumFolder = podsFolder:FindFirstChild("podium_" .. pod.podium_id) or Instance.new("Folder")
+                    local podiumFolderName = "podium_" .. pod.podium_id
+                    local podiumFolder = podsFolder:FindFirstChild(podiumFolderName) or Instance.new("Folder")
                     if not podiumFolder.Parent then
-                        podiumFolder.Name = "podium_" .. pod.podium_id
+                        podiumFolder.Name = podiumFolderName
                         podiumFolder.Parent = podsFolder
                     end
                     processedPods[podiumFolder.Name] = true
-                    local isEmptyValue = podiumFolder:FindFirstChild("is_empty") or Instance.new("BoolValue")
-                    isEmptyValue.Name = "is_empty"
-                    isEmptyValue.Value = pod.is_empty
-                    isEmptyValue.Parent = podiumFolder
+                    
+                    updateValue(podiumFolder, "is_empty", pod.is_empty, "BoolValue")
+
                     local petFolder = podiumFolder:FindFirstChild("pet")
                     if pod.pet then
-                        petFolder = petFolder or Instance.new("Folder")
-                        petFolder.Name = "pet"
-                        petFolder.Parent = podiumFolder
-                        local nameValue = petFolder:FindFirstChild("name") or Instance.new("StringValue")
-                        nameValue.Name = "name"
-                        nameValue.Value = pod.pet.name
-                        nameValue.Parent = petFolder
-                        local generationValue = petFolder:FindFirstChild("generation_value") or Instance.new("StringValue")
-                        generationValue.Name = "generation_value"
-                        generationValue.Value = tostring(pod.pet.generation_value)
-                        generationValue.Parent = petFolder
-                        local isStolenValue = petFolder:FindFirstChild("is_stolen") or Instance.new("BoolValue")
-                        isStolenValue.Name = "is_stolen"
-                        isStolenValue.Value = pod.pet.is_stolen
-                        isStolenValue.Parent = petFolder
-                        local isInMachineValue = petFolder:FindFirstChild("is_in_machine") or Instance.new("BoolValue")
-                        isInMachineValue.Name = "is_in_machine"
-                        isInMachineValue.Value = pod.pet.is_in_machine
-                        isInMachineValue.Parent = petFolder
-                        local mutationValue = petFolder:FindFirstChild("mutation") or Instance.new("StringValue")
-                        mutationValue.Name = "mutation"
-                        mutationValue.Value = pod.pet.mutation
-                        mutationValue.Parent = petFolder
-                        local priceValue = petFolder:FindFirstChild("price") or Instance.new("StringValue")
-                        priceValue.Name = "price"
-                        priceValue.Value = pod.pet.price
-                        priceValue.Parent = petFolder
-                        local rarityValue = petFolder:FindFirstChild("rarity") or Instance.new("StringValue")
-                        rarityValue.Name = "rarity"
-                        rarityValue.Value = pod.pet.rarity
-                        rarityValue.Parent = petFolder
+                        if not petFolder then
+                            petFolder = Instance.new("Folder")
+                            petFolder.Name = "pet"
+                            petFolder.Parent = podiumFolder
+                        end
+                        updateValue(petFolder, "name", pod.pet.name, "StringValue")
+                        updateValue(petFolder, "generation_value", tostring(pod.pet.generation_value), "StringValue")
+                        updateValue(petFolder, "is_stolen", pod.pet.is_stolen, "BoolValue")
+                        updateValue(petFolder, "is_in_machine", pod.pet.is_in_machine, "BoolValue")
+                        updateValue(petFolder, "mutation", pod.pet.mutation, "StringValue")
+                        updateValue(petFolder, "price", pod.pet.price, "StringValue")
+                        updateValue(petFolder, "rarity", pod.pet.rarity, "StringValue")
                     elseif petFolder then
                         petFolder:Destroy()
                     end
@@ -289,51 +234,31 @@ local function updateReplicatedStorageData(data, bestPet, isBestPetMine)
                     child:Destroy()
                 end
             end
+
             local basetimeFolder = plotFolder:FindFirstChild("basetime")
             if plotData.purchase_data and next(plotData.purchase_data) ~= nil then
-                basetimeFolder = basetimeFolder or Instance.new("Folder")
-                if not basetimeFolder.Parent then
+                if not basetimeFolder then
+                    basetimeFolder = Instance.new("Folder")
                     basetimeFolder.Name = "basetime"
                     basetimeFolder.Parent = plotFolder
                 end
-                local isLockedValue = basetimeFolder:FindFirstChild("is_locked") or Instance.new("BoolValue")
-                isLockedValue.Name = "is_locked"
-                isLockedValue.Value = plotData.purchase_data.RemainingTime ~= "0s"
-                isLockedValue.Parent = basetimeFolder
-                local remainingTimeValue = basetimeFolder:FindFirstChild("RemainingTime") or Instance.new("StringValue")
-                remainingTimeValue.Name = "RemainingTime"
-                remainingTimeValue.Value = plotData.purchase_data.RemainingTime
-                remainingTimeValue.Parent = basetimeFolder
-                local childrenToDestroy = {}
-                for _, child in ipairs(basetimeFolder:GetChildren()) do
-                    if child.Name ~= "is_locked" and child.Name ~= "RemainingTime" then
-                        table.insert(childrenToDestroy, child)
-                    end
-                end
-                for _, child in ipairs(childrenToDestroy) do
-                    child:Destroy()
-                end
+                updateValue(basetimeFolder, "is_locked", plotData.is_locked, "BoolValue")
+                updateValue(basetimeFolder, "RemainingTime", plotData.purchase_data.RemainingTime, "StringValue")
             elseif basetimeFolder then
                 basetimeFolder:Destroy()
             end
-            local otherChildrenToDestroy = {}
-            for _, child in ipairs(plotFolder:GetChildren()) do
-                if child.Name ~= "is_empty" and child.Name ~= "owner" and child.Name ~= "is_mine" and child.Name ~= "plot_id" and child.Name ~= "plotguid" and child.Name ~= "summary" and child.Name ~= "pods" and child.Name ~= "basetime" then
-                    table.insert(otherChildrenToDestroy, child)
-                end
-            end
-            for _, child in ipairs(otherChildrenToDestroy) do
-                child:Destroy()
-            end
         end
     end
+
     for _, child in ipairs(playerDataFolder:GetChildren()) do
         if not processedPlots[child.Name] then
             child:Destroy()
         end
     end
-    updateBestPetData(bestPet, bestPet and bestPet.is_mine)
+    
+    updateBestPetData(bestPet)
 end
+
 local function getFloorFromPodiumId(podiumId)
     if podiumId >= 1 and podiumId <= 10 then
         return 1
@@ -345,8 +270,10 @@ local function getFloorFromPodiumId(podiumId)
         return "Unknown"
     end
 end
-local function generatePetData()
+
+local function runDataGeneration()
     if not Plots then return end
+    
     local allPlots = {}
     local totalOccupiedSlots = 0
     local totalEmptySlots = 0
@@ -355,20 +282,26 @@ local function generatePetData()
     local emptyPlotsCount = 0
     local bestPet = nil
     local bestGenerationValue = -1
+	local processedGuids = {}
+
     for _, plot in ipairs(Plots:GetChildren()) do
+		local guid = plot.Name
+		processedGuids[guid] = true
         local plotOwner = getPlotOwnerName(plot)
         local isMine = plotOwner == player.Name or plotOwner == player.DisplayName
         local plotData = {
             owner = plotOwner,
             plot_id = plotOwner and plotOwner ~= "Empty" and plotOwner .. "'s Base" or "Empty Base",
             is_mine = isMine,
-            plotguid = plot.Name
+            plotguid = guid
         }
+
         if plotOwner ~= "Empty" then
             occupiedPlotsCount = occupiedPlotsCount + 1
         else
             emptyPlotsCount = emptyPlotsCount + 1
         end
+
         local occupiedSlots = 0
         local emptySlots = 0
         local totalSlots = 0
@@ -378,10 +311,7 @@ local function generatePetData()
             totalSlots = #animalPodiums:GetChildren()
             for _, numberedPodium in ipairs(animalPodiums:GetChildren()) do
                 local podiumId = tonumber(numberedPodium.Name) or 0
-                local podData = {
-                    podium_id = podiumId,
-                    is_empty = true
-                }
+                local podData = { podium_id = podiumId, is_empty = true }
                 local baseModel = numberedPodium:FindFirstChild("Base")
                 if baseModel then
                     local spawnPart = baseModel:FindFirstChild("Spawn")
@@ -390,21 +320,24 @@ local function generatePetData()
                         if animalOverhead then
                             local generationLabel = animalOverhead:FindFirstChild("Generation")
                             local displayNameLabel = animalOverhead:FindFirstChild("DisplayName")
-                            local mutationLabel = animalOverhead:FindFirstChild("Mutation")
-                            local priceLabel = animalOverhead:FindFirstChild("Price")
-                            local rarityLabel = animalOverhead:FindFirstChild("Rarity")
-                            local stolenLabel = animalOverhead:FindFirstChild("Stolen")
                             if generationLabel and displayNameLabel then
                                 local textValue = generationLabel.Text
                                 local generationValue = parseGenerationValue(textValue)
+                                
                                 local isStolen = false
                                 local isInMachine = false
+                                local stolenLabel = animalOverhead:FindFirstChild("Stolen")
                                 if stolenLabel and stolenLabel.Visible then
                                     local stolenText = stolenLabel.Text
                                     isStolen = string.match(stolenText, "STOLEN") ~= nil
                                     isInMachine = string.match(stolenText, "IN MACHINE") ~= nil
                                 end
+                                
                                 podData.is_empty = false
+                                local mutationLabel = animalOverhead:FindFirstChild("Mutation")
+                                local priceLabel = animalOverhead:FindFirstChild("Price")
+                                local rarityLabel = animalOverhead:FindFirstChild("Rarity")
+                                
                                 local pet = {
                                     name = displayNameLabel.Text,
                                     generation_value = (generationValue == math.huge) and "Infinity" or generationValue,
@@ -413,14 +346,14 @@ local function generatePetData()
                                     rarity = rarityLabel and rarityLabel.Text or "N/A",
                                     is_stolen = isStolen,
                                     is_in_machine = isInMachine,
-                                    is_mine = isMine,
                                     owner = plotOwner,
                                     floor = getFloorFromPodiumId(podiumId),
                                     podium_id = podiumId,
-                                    plotguid = plot.Name
+                                    plotguid = guid
                                 }
                                 podData.pet = pet
                                 occupiedSlots = occupiedSlots + 1
+
                                 local parsedValue = (typeof(pet.generation_value) == "string" and pet.generation_value == "Infinity") and math.huge or tonumber(pet.generation_value)
                                 if (not isMine) and parsedValue > bestGenerationValue then
                                     bestGenerationValue = parsedValue
@@ -441,6 +374,7 @@ local function generatePetData()
                 table.insert(pods, podData)
             end
         end
+
         plotData.summary = {
             floor = getFloorFromSlotCount(totalSlots),
             total_slots = totalSlots,
@@ -449,10 +383,33 @@ local function generatePetData()
         }
         plotData.pods = pods
         plotData.purchase_data = getPurchaseData(plot)
+        
+        local remainingTimeText = plotData.purchase_data and plotData.purchase_data.RemainingTime
+        local isLocked = remainingTimeText and remainingTimeText ~= "0s"
+
+        if remainingTimeText == "1s" then
+            local firstSeenTime = plotLockdownState[guid]
+            if not firstSeenTime then
+                plotLockdownState[guid] = time()
+            elseif time() - firstSeenTime > 1.1 then
+                isLocked = false
+            end
+        else
+            plotLockdownState[guid] = nil
+        end
+        plotData.is_locked = isLocked
+
         totalOccupiedSlots = totalOccupiedSlots + occupiedSlots
         totalEmptySlots = totalEmptySlots + emptySlots
         table.insert(allPlots, plotData)
     end
+	
+	for guidInState in pairs(plotLockdownState) do
+		if not processedGuids[guidInState] then
+			plotLockdownState[guidInState] = nil
+		end
+	end
+
     local finalData = {
         plots = allPlots,
         server_summary = {
@@ -465,15 +422,23 @@ local function generatePetData()
     }
     updateReplicatedStorageData(finalData, bestPet)
 end
+
+local function generatePetData()
+    if updatePending then return end
+    updatePending = true
+    task.defer(function()
+        runDataGeneration()
+        updatePending = false
+    end)
+end
+
 local function setupListenersForGui(animalOverhead)
     if not animalOverhead then return end
     local function connectSignal(obj, prop)
         table.insert(connections, obj:GetPropertyChangedSignal(prop):Connect(generatePetData))
     end
     local generationLabel = animalOverhead:FindFirstChild("Generation")
-    if generationLabel then
-        connectSignal(generationLabel, "Text")
-    end
+    if generationLabel then connectSignal(generationLabel, "Text") end
     local stolenLabel = animalOverhead:FindFirstChild("Stolen")
     if stolenLabel then
         connectSignal(stolenLabel, "Text")
@@ -485,11 +450,13 @@ local function setupListenersForGui(animalOverhead)
         end
     end)
 end
+
 local function setupListenersForPodium(numberedPodium)
     local baseModel = numberedPodium:FindFirstChild("Base")
     if not baseModel then return end
     local spawnPart = baseModel:FindFirstChild("Spawn")
     if not spawnPart then return end
+    
     local function setupForAttachment(attachment)
         if not attachment then return end
         attachment.ChildAdded:Connect(function(child)
@@ -503,10 +470,9 @@ local function setupListenersForPodium(numberedPodium)
             setupListenersForGui(animalOverhead)
         end
     end
+    
     spawnPart.ChildRemoved:Connect(function(child)
-        if child.Name == "Attachment" then
-            generatePetData()
-        end
+        if child.Name == "Attachment" then generatePetData() end
     end)
     spawnPart.ChildAdded:Connect(function(child)
         if child.Name == "Attachment" then
@@ -514,11 +480,11 @@ local function setupListenersForPodium(numberedPodium)
             generatePetData()
         end
     end)
+    
     local attachment = spawnPart:FindFirstChild("Attachment")
-    if attachment then
-        setupForAttachment(attachment)
-    end
+    if attachment then setupForAttachment(attachment) end
 end
+
 local function setupListenersForPlotBlock(plotBlock)
     local mainPart = plotBlock:FindFirstChild("Main")
     if not mainPart then return end
@@ -529,6 +495,7 @@ local function setupListenersForPlotBlock(plotBlock)
         table.insert(connections, remainingTimeLabel:GetPropertyChangedSignal("Text"):Connect(generatePetData))
     end
 end
+
 local function setupListenersForPlot(plot)
     local animalPodiums = plot:FindFirstChild("AnimalPodiums")
     if animalPodiums then
@@ -538,6 +505,7 @@ local function setupListenersForPlot(plot)
         animalPodiums.ChildAdded:Connect(setupListenersForPodium)
         animalPodiums.ChildRemoved:Connect(generatePetData)
     end
+    
     local purchasesFolder = plot:FindFirstChild("Purchases")
     if purchasesFolder then
         for _, plotBlock in ipairs(purchasesFolder:GetChildren()) do
@@ -546,11 +514,13 @@ local function setupListenersForPlot(plot)
         purchasesFolder.ChildAdded:Connect(setupListenersForPlotBlock)
     end
 end
+
 local function start()
     for _, conn in ipairs(connections) do
         conn:Disconnect()
     end
     connections = {}
+    
     if Plots then
         for _, plot in ipairs(Plots:GetChildren()) do
             setupListenersForPlot(plot)
@@ -561,6 +531,15 @@ local function start()
         end)
         Plots.ChildRemoved:Connect(generatePetData)
     end
+    
+    RunService.Heartbeat:Connect(function()
+        if time() - lastPollTime > 1 then
+            lastPollTime = time()
+            generatePetData()
+        end
+    end)
+    
     generatePetData()
 end
+
 start()
